@@ -1,0 +1,7 @@
+flask
+face_recognition
+flask_cors
+requests
+io
+PIL
+numpy
