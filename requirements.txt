@@ -1,6 +1,5 @@
 flask
 flask-cors
-face_recognition
-requests
-Pillow
+face-recognition
+pillow
 numpy
