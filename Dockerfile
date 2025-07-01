@@ -1,30 +1,35 @@
-FROM python:3.10-slim
+# Use an official Python image
+FROM python:3.9-slim
 
-# Install system dependencies required by dlib and face_recognition
+# Set environment vars
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Set work directory
+WORKDIR /app
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     libboost-all-dev \
-    libssl-dev \
-    libffi-dev \
-    libatlas-base-dev \
-    libjpeg-dev \
-    libpng-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    libx11-dev \
+    libgtk-3-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /app
-
-# Copy dependencies and install
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the app
+# Copy project
 COPY . .
 
-# Expose Flask port
+# Expose the port
 EXPOSE 5001
 
-# Start the Flask app
+# Run the app
 CMD ["python", "app.py"]
