@@ -1,0 +1,25 @@
+steps:
+  # Step 1: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/face-recognition', '.']
+
+  # Step 2: Push the image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/face-recognition']
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - face-recognition
+      - --image=gcr.io/$PROJECT_ID/face-recognition
+      - --platform=managed
+      - --region=europe-west1 # 🔁 Change this to your region
+      - --memory=1Gi
+      - --timeout=900
+      - --allow-unauthenticated
+
+images:
+  - gcr.io/$PROJECT_ID/face-recognition
