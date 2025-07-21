@@ -1,5 +1,8 @@
-flask
+Flask
 flask-cors
-face-recognition
-pillow
 numpy
+Pillow
+opencv-python
+insightface
+onnxruntime
+scipy
