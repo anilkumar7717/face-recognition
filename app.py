@@ -1,95 +1,82 @@
 from flask import Flask, request, jsonify
-import face_recognition
 from flask_cors import CORS
 from io import BytesIO
 from PIL import Image, ImageOps
 import numpy as np
 import logging
+import insightface
+from typing import List
+from insightface.app import FaceAnalysis
+import cv2
 
 app = Flask(__name__)
 CORS(app)
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+face_app.prepare(ctx_id=0)
+
 def preprocess_image(image_file, max_size=(800, 800)):
-    """
-    Preprocess image for better face detection
-    """
     img = Image.open(image_file).convert('RGB')
     img = ImageOps.exif_transpose(img)
-    
-    # Resize if image is too large (improves performance)
     if img.size[0] > max_size[0] or img.size[1] > max_size[1]:
         img.thumbnail(max_size, Image.Resampling.LANCZOS)
-    
     return np.array(img)
 
-def get_best_face_encoding(img_array, model='hog'):
-    """
-    Get the best face encoding from an image
-    Uses multiple detection methods if needed
-    """
+def get_best_face_embedding(img_array):
     try:
-        # Try HOG first (faster)
-        face_locations = face_recognition.face_locations(img_array, model=model)
-        if not face_locations:
-            # Try CNN if HOG fails (more accurate but slower)
-            face_locations = face_recognition.face_locations(img_array, model='cnn')
-        
-        if not face_locations:
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        faces = face_app.get(img_bgr)
+
+        if not faces:
             return None
-        
-        # Get encodings for all detected faces
-        face_encodings = face_recognition.face_encodings(img_array, face_locations)
-        
-        if not face_encodings:
-            return None
-        
-        # If multiple faces, return the largest one (most prominent)
-        if len(face_encodings) > 1:
-            largest_face_idx = max(range(len(face_locations)), 
-                                 key=lambda i: (face_locations[i][2] - face_locations[i][0]) * 
-                                             (face_locations[i][1] - face_locations[i][3]))
-            return face_encodings[largest_face_idx]
-        
-        return face_encodings[0]
-    
+
+        largest_face = max(faces, key=lambda f: f.bbox[2] * f.bbox[3])
+        return largest_face.embedding.tolist()
+
     except Exception as e:
-        logger.error(f"Error in face encoding: {e}")
+        logger.error(f"Error in face embedding: {e}")
         return None
 
 @app.route('/convertToEncoding', methods=['POST'])
 def convert_to_encoding():
     try:
         if 'image' not in request.files:
-            return jsonify({'error': 'No image file provided'}), 400
-        
+            resp = {'error': 'No image file provided'}
+            logger.info(f"Returning: {resp}")
+            return jsonify(resp), 400
+
         image_file = request.files['image']
         if image_file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
-        
-        # Validate file type
+            resp = {'error': 'No selected file'}
+            logger.info(f"Returning: {resp}")
+            return jsonify(resp), 400
+
         allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
         file_ext = image_file.filename.rsplit('.', 1)[1].lower() if '.' in image_file.filename else ''
         if file_ext not in allowed_extensions:
-            return jsonify({'error': 'Invalid file type'}), 400
-        
+            resp = {'error': 'Invalid file type'}
+            logger.info(f"Returning: {resp}")
+            return jsonify(resp), 400
+
         img_array = preprocess_image(image_file)
-        face_encoding = get_best_face_encoding(img_array)
-        
-        if face_encoding is None:
-            return jsonify({'error': 'No face detected or face too unclear'}), 400
-        
-        encoding_list = face_encoding.tolist()
-        
-        return jsonify({
+        face_embedding = get_best_face_embedding(img_array)
+
+        if face_embedding is None:
+            resp = {'error': 'No face detected or face too unclear'}
+            logger.info(f"Returning: {resp}")
+            return jsonify(resp), 400
+
+        resp = {
             'success': True,
-            'face_encoding': encoding_list,
-            'encoding_quality': 'good'  # Could implement quality scoring
-        })
-    
+            'face_encoding': face_embedding,
+            'encoding_quality': 'good'
+        }
+        logger.info(f"Returning: {resp}")
+        return jsonify(resp)
+
     except Exception as e:
         logger.error(f"Error converting image to face encoding: {str(e)}")
         return jsonify({'error': 'Failed to process image'}), 500
@@ -99,91 +86,96 @@ def verify_face():
     try:
         data = request.json
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
-        
+            logger.warning("No JSON data received")
+            resp = {'error': 'No JSON data provided'}
+            logger.info(f"Returning: {resp}")
+            return jsonify(resp), 400
+
         captured_encoding = data.get('capturedEncoding')
         enrolled_encodings = data.get('enrolledEncodings')
-        custom_tolerance = data.get('tolerance', 0.6)  # Allow custom tolerance
-        
+
         if not captured_encoding or not enrolled_encodings:
-            return jsonify({
-                'error': 'Missing capturedEncoding or enrolledEncodings'
-            }), 400
-        
-        # Validate tolerance range
-        if not (0.1 <= custom_tolerance <= 1.0):
-            custom_tolerance = 0.6
-        
-        captured_face_encoding = np.array(captured_encoding)
-        
-        # Validate encoding dimensions
-        if captured_face_encoding.shape[0] != 128:
-            return jsonify({'error': 'Invalid face encoding format'}), 400
-        
+            resp = {'error': 'Missing capturedEncoding or enrolledEncodings'}
+            logger.info(f"Returning: {resp}")
+            return jsonify(resp), 400
+
+        captured_encoding = np.array(captured_encoding, dtype=np.float32)
+
+        if captured_encoding.shape[0] != 512:
+            resp = {'error': 'Invalid face encoding format'}
+            logger.info(f"Returning: {resp}")
+            return jsonify(resp), 400
+
         best_match = None
         best_distance = float('inf')
-        matches_found = []
-        
-        # Compare with all enrolled encodings
-        for index, enrolled_encoding in enumerate(enrolled_encodings):
+
+        for index, enrolled in enumerate(enrolled_encodings):
             try:
-                enrolled_face_encoding = np.array(enrolled_encoding['encoding'])
-                
-                # Validate enrolled encoding
-                if enrolled_face_encoding.shape[0] != 128:
-                    logger.warning(f"Skipping invalid enrolled encoding {index}")
+                enrolled_encoding = np.array(enrolled['encoding'], dtype=np.float32)
+
+                if enrolled_encoding.shape[0] != 512:
+                    logger.warning(f"Skipping invalid enrolled encoding at index {index}")
                     continue
-                
-                # Calculate face distance (lower = more similar)
-                distance = face_recognition.face_distance(
-                    [enrolled_face_encoding], 
-                    captured_face_encoding
-                )[0]
-                
-                # Check if it's a match
-                is_match = distance <= custom_tolerance
-                
-                logger.info(f"Encoding {index + 1}: Distance = {distance:.4f}, Match = {is_match}")
-                
-                if is_match:
-                    match_info = {
-                        'id': enrolled_encoding.get('id', index),
-                        'distance': float(distance),
-                        'confidence': float(1 - distance)  # Higher confidence = better match
+
+                dot_product = np.dot(captured_encoding, enrolled_encoding)
+                norm_product = np.linalg.norm(captured_encoding) * np.linalg.norm(enrolled_encoding)
+                similarity = dot_product / norm_product
+                distance = 1 - similarity
+
+                logger.info(f"Encoding {index + 1} (ID={enrolled.get('id', index)}): Distance = {distance:.4f}")
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best_match = {
+                        'id': enrolled.get('id', index),
+                        'distance': float(distance)
                     }
-                    matches_found.append(match_info)
-                    
-                    # Track the best match (lowest distance)
-                    if distance < best_distance:
-                        best_distance = distance
-                        best_match = match_info
-            
+
             except Exception as e:
-                logger.error(f"Error comparing encoding {index + 1}: {e}")
+                logger.error(f"Error comparing encoding at index {index}: {e}")
                 continue
-        
+
         if best_match:
-            return jsonify({
-                'match': True,
-                'matchedEncodingId': best_match['id'],
-                'confidence': best_match['confidence'],
-                'distance': best_match['distance'],
-                'all_matches': matches_found if len(matches_found) > 1 else None
-            })
+            distance_value = float(best_distance)
+            confidence = 1.0 - distance_value
+            match_percentage = round(confidence * 100, 2)
+
+            if confidence >= 0.85: 
+                resp = {
+                    'match': True,
+                    'matchedEncodingId': best_match['id'],
+                    'distance': distance_value,
+                    'confidence': round(confidence, 3),
+                    'match_percentage': match_percentage
+                } 
+                logger.info(f" MATCH FOUND: {resp}")
+                return jsonify(resp)
+            else:
+                resp = {
+                    'match': False,
+                    'message': 'Face found, but confidence is below 85%',
+                    'min_distance': distance_value,
+                    'confidence': round(confidence, 3),
+                    'match_percentage': match_percentage
+                }
+                logger.info(f"MATCH TOO WEAK: {resp}")
+                return jsonify(resp)
         else:
-            return jsonify({
+            resp = {
                 'match': False,
-                'message': 'No matching face found'
-            })
-    
+                'message': 'No matching face found',
+                'min_distance': None
+            }
+            logger.info(f"NO MATCH FOUND: {resp}")
+            return jsonify(resp)
+
     except Exception as e:
         logger.error(f"Exception during face verification: {str(e)}")
         return jsonify({'error': 'Face verification failed'}), 500
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'service': 'face-recognition-api'})
+    return jsonify({'status': 'healthy', 'service': 'face-recognition-api-insightface'})
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8080)
