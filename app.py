@@ -884,15 +884,15 @@ def verify_face():
                 confidence_threshold = 0.70  # Lenient for very low light
                 threshold_reason = "very_low_light"
             elif is_low_light or brightness < 70 or is_poor_quality:
-                confidence_threshold = 0.75  # Moderate for low light/poor quality
+                confidence_threshold = 0.70  # Moderate for low light/poor quality
                 threshold_reason = "low_light_or_poor_quality"
             else:
                 # For good lighting, check if score suggests hidden low-light conditions
-                if 0.75 <= confidence < 0.82:
-                    confidence_threshold = 0.77
+                if 0.75 <= confidence < 0.72:
+                    confidence_threshold = 0.70
                     threshold_reason = "assumed_low_light"
                 else:
-                    confidence_threshold = 0.82  # Standard threshold for good conditions
+                    confidence_threshold = 0.72  # Standard threshold for good conditions
                     threshold_reason = "normal"
             
             is_match = confidence >= confidence_threshold
